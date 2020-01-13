@@ -4,8 +4,8 @@ Chat Server of which socket can be configured / customized in C++.
 ## Requirements
 - Ubuntu
 
-## Compile & Run
-- Compile:
+## Build & Run
+- Build:
     -  g++ main.cpp -o ChatServer server_sock.cpp
 - Run:
     - ./ChatServer
