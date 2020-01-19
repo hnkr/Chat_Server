@@ -1,3 +1,8 @@
+/**
+ * server_sock.cpp
+ * Hunkar Ciplak, hunkarciplak@hotmail.com
+*/
+
 
 #include "server_sock.hpp"
 #include <unistd.h>
@@ -5,6 +10,10 @@
 #include <arpa/inet.h>    
 #include <cstring>
 #include <sys/ioctl.h>
+#include <mutex>
+#include <queue>
+
+
 
 ServerSocket::ServerSocket()
 {
@@ -16,9 +25,9 @@ ServerSocket::~ServerSocket()
     if(client_socks != nullptr){
         //close the client sockets
         for(int i = 0; i < server_sock_info.MAX_CLIENT_COUNT; i++){
-            if(client_socks[i]){
-                shutdown(client_socks[i], SHUT_RDWR);
-                close(client_socks[i]);
+            if(client_socks[i].client_fd){
+                shutdown(client_socks[i].client_fd, SHUT_RDWR);
+                close(client_socks[i].client_fd);
             }
         }
         //free the allocated memory.
@@ -57,6 +66,8 @@ void ServerSocket::CreateSocket(const SERVER_SOCK_INFO_T *socket_config_)
     printf("Server socket created!\r\n");
 }
 
+void server_sender(ServerSocket *);
+
 void ServerSocket::StartServer(void)
 {
     fd_set read_fds;  
@@ -81,7 +92,9 @@ void ServerSocket::StartServer(void)
         exit(EXIT_FAILURE); 
     } 
     //allocate buf to handle client sockets..
-    client_socks = (int *) calloc(server_sock_info.MAX_CLIENT_COUNT, sizeof(int));
+    mclient_lock.lock();
+    client_socks = (CLIENT_INFO_T *) calloc(server_sock_info.MAX_CLIENT_COUNT, sizeof(CLIENT_INFO_T));
+    mclient_lock.unlock();
     if(!client_socks){
         perror("Memory Allocation Error for Client Sockets!");
         exit(EXIT_FAILURE);
@@ -94,20 +107,23 @@ void ServerSocket::StartServer(void)
         FD_SET(sock_fd, &read_fds); //set with the socket of server.
         max_socket_fd = sock_fd;  //by default we assume sock_fd is the highest number of all sockets including client sockets.
         //update max socket fd.
+        this->mclient_lock.lock();
         for(int i = 0; i < server_sock_info.MAX_CLIENT_COUNT; i++){
-            if(client_socks[i] > 0){
-                FD_SET(client_socks[i], &read_fds);
-                if(client_socks[i] > max_socket_fd)
-                    max_socket_fd = client_socks[i];
+            if(client_socks[i].client_fd > 0){
+                FD_SET(client_socks[i].client_fd, &read_fds);
+                if(client_socks[i].client_fd > max_socket_fd)
+                    max_socket_fd = client_socks[i].client_fd;
             }
         }
-        printf("Select..\r\n");
+        this->mclient_lock.unlock();
+        //printf("Select..\r\n");
         if(select(max_socket_fd + 1, &read_fds, NULL, NULL, NULL) < 0)
             printf("Select Error!");
         else{   //select returns because of having data ready in the socket.
-            printf("Conn. Req Received!\r\n");
+            
             //check for server socket / any connection request?
             if(FD_ISSET(sock_fd, &read_fds)){
+                printf("Conn. Req Received!\r\n");
                 struct sockaddr_in client_addr;
                 int client_addr_len = sizeof(client_addr);
                 int new_client_fd = accept(sock_fd, (sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
@@ -115,40 +131,91 @@ void ServerSocket::StartServer(void)
                     perror("Accept Error");
                     exit(EXIT_FAILURE);
                 }
-                printf("*** New Client, socket fd is %d , ip is : %s , port : %d  \r\n" , new_client_fd , inet_ntoa(client_addr.sin_addr) , ntohs (client_addr.sin_port));   
+                //printf("*** New Client, socket fd is %d , ip is : %s , port : %d  \r\n" , new_client_fd , inet_ntoa(client_addr.sin_addr) , ntohs (client_addr.sin_port));   
                 //update client socket array with new client socket socket descriptor.
+                this->mclient_lock.lock();
                 for(int i = 0; i < server_sock_info.MAX_CLIENT_COUNT; i++){
-                    if(client_socks[i] == 0){
-                        client_socks[i] = new_client_fd;
+                    if(client_socks[i].client_fd == 0){
+                        client_socks[i].client_fd = new_client_fd;
+                        client_socks[i].client_addr = client_addr;
+                        std::string msg_rcvd("## NEW CONNECTION: "); 
+                        msg_rcvd = msg_rcvd + inet_ntoa(client_socks[i].client_addr.sin_addr) + "\r\n";
+                        this->mbuf_lock.lock();
+                        qmessage_to_send.push(msg_rcvd);
+                        this->mbuf_lock.unlock();
                         break;
                     }
                 }
+                this->mclient_lock.unlock();
             }
             //check other client sockets
             for(int i = 0; i < server_sock_info.MAX_CLIENT_COUNT; i++){
-                if(FD_ISSET(client_socks[i], &read_fds)){
+                if(FD_ISSET(client_socks[i].client_fd, &read_fds)){
                     uint16_t byte_count = 0;
-                    ioctl (client_socks[i], FIONREAD, &byte_count);
+                    this->mclient_lock.lock();
+                    ioctl (client_socks[i].client_fd, FIONREAD, &byte_count);
+                    this->mclient_lock.unlock();
                     if(byte_count){
-                        unsigned char *buf = (unsigned char *)calloc(byte_count, sizeof(uint8_t));
-                        read(client_socks[i], buf, byte_count);
-                        printf("Recvd Message from Client:%d, Msg:%s\r\n", client_socks[i], buf);
+                        char *buf = (char *)calloc(byte_count, sizeof(uint8_t));
+                        read(client_socks[i].client_fd, buf, byte_count);
+                        //printf("Recvd Message from Client:%s, Msg:%s\r\n", inet_ntoa(client_socks[i].client_addr.sin_addr), buf);
+                        std::string msg_rcvd(inet_ntoa(client_socks[i].client_addr.sin_addr));
+                        msg_rcvd = msg_rcvd + ":" + buf;
+                        this->mbuf_lock.lock();
+                        qmessage_to_send.push(msg_rcvd);
+                        //printf("Recvd Message Pushed to Queue:%s\r\n", this->qmessage_to_send.front().c_str());
+                        //printf("Size of Queue:%d\r\n", this->qmessage_to_send.size());
+                        this->mbuf_lock.unlock();
+                        free(buf);
                     }else if(byte_count == 0){  //disconnection request
-                        printf("Disconnection Req. Recvd, Client sock fd:%d\r\n", client_socks[i]);
-                        shutdown(client_socks[i], SHUT_RDWR);
-                        close(client_socks[i]);
-                        client_socks[i] = 0;
+                        printf("Disconn. Req Received!\r\n");
+                        std::string msg_rcvd("## DISCONNECTION: "); 
+                        msg_rcvd = msg_rcvd + inet_ntoa(client_socks[i].client_addr.sin_addr) + "\r\n";
+                        this->mbuf_lock.lock();
+                        qmessage_to_send.push(msg_rcvd);
+                        this->mbuf_lock.unlock();
+                        this->mclient_lock.lock();
+                        //printf("Disconnection Req. Recvd, Client ip:%s\r\n", inet_ntoa(client_socks[i].client_addr.sin_addr));
+                        shutdown(client_socks[i].client_fd, SHUT_RDWR);
+                        close(client_socks[i].client_fd);
+                        client_socks[i].client_fd = 0;
+                        client_socks[i].client_addr = {0};
+                        this->mclient_lock.unlock();
                     }
-
                 }
             }
         }
     }
 }
 
+void ServerSocket::SendQueueToAllClients(void)
+{
+    //printf("SendQueueToAllClients\r\n");
+    while(1){
+        if(qmessage_to_send.size()){
+            mbuf_lock.lock();
+            std::string msg_buf (qmessage_to_send.front());
+            qmessage_to_send.pop();
+            mbuf_lock.unlock();
+            for(int i = 0; i < server_sock_info.MAX_CLIENT_COUNT; i++){
+                mclient_lock.lock();
+                if(client_socks[i].client_fd)
+                    write(client_socks[i].client_fd, msg_buf.c_str(), msg_buf.length() + 1);
+                mclient_lock.unlock();
+            }
+        }
+    }
+}
 
 SERVER_SOCK_INFO_T ServerSocket::GetSocketOptions(void)const
 {
     return this->server_sock_info;
 }
+
+CLIENT_INFO_T * ServerSocket::GetClientSocketBuf(void)const
+{
+    return this->client_socks;
+}
+
+
 

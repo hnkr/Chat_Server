@@ -1,3 +1,8 @@
+/**
+ * server_sock.hpp
+ * Hunkar Ciplak, hunkarciplak@hotmail.com
+*/
+
 
 #ifndef _SERVER_SOCK_H_
 
@@ -5,6 +10,14 @@
 
 #include <iostream>
 #include <netinet/in.h>
+#include <sys/socket.h>
+#include <mutex>
+#include <queue>
+
+typedef struct{
+    struct sockaddr_in client_addr;
+    int client_fd;
+}CLIENT_INFO_T;
 
 typedef struct{
     uint16_t    PORT_NO;
@@ -18,19 +31,24 @@ typedef struct{
 }SERVER_SOCK_INFO_T;
 
 class ServerSocket {
+    public:
+        std::queue<std::string> qmessage_to_send;
+        std::mutex mbuf_lock, mclient_lock;
     private:
         SERVER_SOCK_INFO_T server_sock_info;
         int16_t sock_fd = 0;
         struct sockaddr_in server_addr;
-        int *client_socks = nullptr; //will handle the client sockets..
+        CLIENT_INFO_T *client_socks = nullptr;
+        //int *client_socks = nullptr; //will handle the client sockets..
 
     public:
         ServerSocket(void);
         ~ServerSocket();
-        void CreateSocket(const SERVER_SOCK_INFO_T *socket_config_);    //configres the socket and sets the socket opts.
+        void CreateSocket(const SERVER_SOCK_INFO_T *);    //configres the socket and sets the socket opts.
         void StartServer(void);
-        void SendToAllClients(std::uint8_t msg_to_send_)const;
+        void SendQueueToAllClients(void);
         SERVER_SOCK_INFO_T GetSocketOptions(void)const;
+        CLIENT_INFO_T * GetClientSocketBuf(void)const;
     };
 
 #endif
