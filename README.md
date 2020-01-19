@@ -6,7 +6,7 @@ Chat Server of which socket can be configured / customized in C++.
 
 ## Working Principle
 - Select based.
-- Thread based. 2 thread will be in use:
+- Thread based. 2 threads will be in use:
     - 1 for listening & conn. / disconn. reqs. & receiving data
     - 1 for sending the received data to all connected clients
 
