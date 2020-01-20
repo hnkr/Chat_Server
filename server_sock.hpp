@@ -31,15 +31,14 @@ typedef struct{
 }SERVER_SOCK_INFO_T;
 
 class ServerSocket {
-    public:
-        std::queue<std::string> qmessage_to_send;
-        std::mutex mbuf_lock, mclient_lock;
+
     private:
         SERVER_SOCK_INFO_T server_sock_info;
         int16_t sock_fd = 0;
         struct sockaddr_in server_addr;
         CLIENT_INFO_T *client_socks = nullptr;
-        //int *client_socks = nullptr; //will handle the client sockets..
+        std::queue<std::string> qmessage_to_send;
+        std::mutex mbuf_lock, mclient_lock;
 
     public:
         ServerSocket(void);

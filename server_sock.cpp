@@ -66,10 +66,9 @@ void ServerSocket::CreateSocket(const SERVER_SOCK_INFO_T *socket_config_)
     printf("Server socket created!\r\n");
 }
 
-void server_sender(ServerSocket *);
-
 void ServerSocket::StartServer(void)
 {
+    std::uint16_t connected_client_count = 0;
     fd_set read_fds;  
     int max_socket_fd;
     if(sock_fd <= 0){
@@ -126,27 +125,35 @@ void ServerSocket::StartServer(void)
                 printf("Conn. Req Received!\r\n");
                 struct sockaddr_in client_addr;
                 int client_addr_len = sizeof(client_addr);
+               
                 int new_client_fd = accept(sock_fd, (sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
                 if(new_client_fd < 0){
                     perror("Accept Error");
                     exit(EXIT_FAILURE);
                 }
-                //printf("*** New Client, socket fd is %d , ip is : %s , port : %d  \r\n" , new_client_fd , inet_ntoa(client_addr.sin_addr) , ntohs (client_addr.sin_port));   
-                //update client socket array with new client socket socket descriptor.
-                this->mclient_lock.lock();
-                for(int i = 0; i < server_sock_info.MAX_CLIENT_COUNT; i++){
-                    if(client_socks[i].client_fd == 0){
-                        client_socks[i].client_fd = new_client_fd;
-                        client_socks[i].client_addr = client_addr;
-                        std::string msg_rcvd("## NEW CONNECTION: "); 
-                        msg_rcvd = msg_rcvd + inet_ntoa(client_socks[i].client_addr.sin_addr) + "\r\n";
-                        this->mbuf_lock.lock();
-                        qmessage_to_send.push(msg_rcvd);
-                        this->mbuf_lock.unlock();
-                        break;
+                if(connected_client_count < server_sock_info.MAX_CLIENT_COUNT){ //if MAX_CLIENT_COUNT client are already connected, then slightly discard the new connection request.
+                    connected_client_count++;
+                    //printf("*** New Client, socket fd is %d , ip is : %s , port : %d  \r\n" , new_client_fd , inet_ntoa(client_addr.sin_addr) , ntohs (client_addr.sin_port));   
+                    //update client socket array with new client socket socket descriptor.
+                    this->mclient_lock.lock();
+                    for(int i = 0; i < server_sock_info.MAX_CLIENT_COUNT; i++){
+                        if(client_socks[i].client_fd == 0){
+                            client_socks[i].client_fd = new_client_fd;
+                            client_socks[i].client_addr = client_addr;
+                            std::string msg_rcvd("## NEW CONNECTION: "); 
+                            msg_rcvd = msg_rcvd + inet_ntoa(client_socks[i].client_addr.sin_addr) + "\r\n";
+                            this->mbuf_lock.lock();
+                            qmessage_to_send.push(msg_rcvd);
+                            this->mbuf_lock.unlock();
+                            break;
+                        }
                     }
+                    this->mclient_lock.unlock();
+                }else{  //if the client limit reached, shutdown and close the socket..
+                    printf("New client socket, shut down and closed!\r\n");
+                    shutdown(new_client_fd, SHUT_RDWR);
+                    close(new_client_fd);
                 }
-                this->mclient_lock.unlock();
             }
             //check other client sockets
             for(int i = 0; i < server_sock_info.MAX_CLIENT_COUNT; i++){
@@ -197,12 +204,13 @@ void ServerSocket::SendQueueToAllClients(void)
             std::string msg_buf (qmessage_to_send.front());
             qmessage_to_send.pop();
             mbuf_lock.unlock();
+            mclient_lock.lock();
             for(int i = 0; i < server_sock_info.MAX_CLIENT_COUNT; i++){
-                mclient_lock.lock();
                 if(client_socks[i].client_fd)
                     write(client_socks[i].client_fd, msg_buf.c_str(), msg_buf.length() + 1);
-                mclient_lock.unlock();
+                
             }
+            mclient_lock.unlock();
         }
     }
 }
